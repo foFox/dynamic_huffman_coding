@@ -1,0 +1,162 @@
+#!/usr/bin/env ruby
+
+#Robert Lis 10323179
+
+#constants
+NO_CHILD = -1
+NOT_YET_TRANSMITTED = "NYT"
+END_OF_TRANSMISSION = "EOF"
+INNER_NODE_CHARACTER = nil
+NO_PARENT = -1
+
+class Node
+	attr_accessor :character, :weight, :left, :right, :parent, :index
+
+	def initialize(params)
+		@character = params[:character]
+		@weight = params[:weight]
+		@left = params[:left]
+		@right= params[:right]
+		@parent = params[:parent]
+		@index = params[:index]
+	end
+
+	def has_left_child?
+		@left != NO_CHILD
+	end
+
+	def has_right_child? 
+		@right != NO_CHILD
+	end
+
+	def is_root? 
+		@parent == NO_PARENT
+	end
+
+	def is_leaf?
+		 !has_right_child? and !has_right_child? and @character != nil
+	end
+
+	def swap(node)
+		temp_index = @index
+		@index = node.index
+		node.index = temp_index
+
+		temp_parent = @parent
+		@parent = node.parent;
+		node.parent = temp_parent
+	end
+end
+
+class Output
+	def initialize
+		@byte = 0b00000000;
+		@index = 7;
+	end
+
+	def write(bit_string)		
+		bit_string.each_char do |bit| 		
+			if bit == "1" 	
+				@byte = @byte | (0b00000001 << @index)				
+			end
+
+			if @index == 0 	
+				STDOUT.write(@byte.chr)
+				@index = 7
+				@byte = 0b00000000
+			else
+				@index -= 1
+			end
+		end
+	end
+
+	def flush
+		STDOUT.write(@byte.chr) if @index != 7
+	end
+end
+
+class Archiver
+
+	def initialize()
+		@input = STDIN;
+		@output = Output.new;
+		root = Node.new({:character => nil, :weight => 0, :left => 2, :right => 1, :parent => NO_PARENT, :index => 0})		
+		@nyt = Node.new({:character => NOT_YET_TRANSMITTED, :weight => 0, :left => NO_CHILD, :right => NO_CHILD, :parent => 0, :index => 2})
+		@eot = Node.new({:character => END_OF_TRANSMISSION, :weight => 0, :left => NO_CHILD, :right => NO_CHILD, :parent => 0, :index => 1})
+		@table = [root, @eot, @nyt]
+		@seen_characters = {NOT_YET_TRANSMITTED => @nyt, END_OF_TRANSMISSION => @eot};		
+	end
+
+	def decode
+		state = :decoding
+		new_symbol_bit_string = ""
+		current_node = @table[0]
+		@input.each_byte do |byte|
+			byte = byte.to_s(2)
+		 	byte.insert(0, "0" * (8 - byte.length)) if byte.length < 8						
+			byte.each_char do |bit|					
+				if state == :decoding
+					current_node = bit == "1" ? @table[current_node.left] : @table[current_node.right]
+					if current_node == @eot
+					elsif current_node == @nyt
+						state = :reading_new_symbol											
+					elsif current_node.is_leaf?
+						@output.write current_node.character			
+						update current_node					
+						current_node = @table[0]
+					end							
+				elsif state == :reading_new_symbol										
+					new_symbol_bit_string << bit	
+					if new_symbol_bit_string.size == 8
+						@output.write new_symbol_bit_string										
+						add_new_symbol new_symbol_bit_string
+						current_node = @table[0]						
+						new_symbol_bit_string = ""
+						state = :decoding
+					end					
+				end									
+			end
+		end			
+		@output.flush
+	end	
+
+	def update(node)	
+		node_index = node.index
+		to_be_exchanged_index = node_index
+		#find the lowest ordered node for weight block 
+		to_be_exchanged_index -= 1 until to_be_exchanged_index.zero? or @table[to_be_exchanged_index - 1].weight != node.weight 
+
+		#unless we swap with the same node or we swap child with parent
+		unless node_index == to_be_exchanged_index or to_be_exchanged_index == node.parent then
+			#swap
+			to_be_exchanged = @table[to_be_exchanged_index]
+			node.swap to_be_exchanged
+			@table[to_be_exchanged_index], @table[node_index] = @table[node_index], @table[to_be_exchanged_index]
+			
+			#update children
+			if node.has_left_child? then @table[node.left].parent = to_be_exchanged_index end
+			if node.has_right_child? then @table[node.right].parent = to_be_exchanged_index end
+			if to_be_exchanged.has_left_child? then @table[to_be_exchanged.left].parent = node_index end
+			if to_be_exchanged.has_right_child? then @table[to_be_exchanged.right].parent = node_index end
+		end
+
+		node.weight += 1
+		unless node.is_root? then update(@table[node.parent]) end
+	end
+
+	def add_new_symbol(character)
+		current_root = @table[@nyt.parent]
+		symbol = Node.new({:character => character, :weight => 1, :left => NO_CHILD, :right => NO_CHILD, :parent => @table.size - 3, :index => @nyt.parent + 1})
+		new_root = Node.new({:character => nil, :weight => 0, :left => @table.size - 1 + 2 ,  :right => @table.size - 1 + 1, :parent => @table.size - 3, :index => @nyt.parent + 2})	
+		@table.insert(@nyt.parent + 1, new_root)
+		@table.insert(@nyt.parent + 1, symbol)
+		@nyt.parent += 2
+		@eot.parent += 2
+		@nyt.index += 2
+		@eot.index += 2
+		@seen_characters[character] = symbol
+		update current_root	
+	end
+end
+
+archiver = Archiver.new.decode
